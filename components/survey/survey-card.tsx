@@ -342,7 +342,7 @@ export function SurveyCard({ phoneDisplay = "(800) 000-0000", phoneHref = "80000
   const handleOptionSelect = (field: keyof SurveyData, value: string) => {
     setSurveyData({ ...surveyData, [field]: value })
 
-    if (field === "propertyType" && ["mobile-home", "land", "other"].includes(value)) {
+    if (field === "propertyType" && ["condo-townhouse", "mobile-home", "land", "other"].includes(value)) {
       setTimeout(() => { setDisqualifyReason("propertyType"); setIsDisqualified(true) }, 300)
       return
     }
