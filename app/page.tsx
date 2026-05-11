@@ -57,6 +57,7 @@ export default function HomePage() {
               phoneDisplay={config.phoneDisplay}
               phoneHref={config.phoneHref}
               serviceAreas={parsedServiceAreas}
+              companyName={config.companyName}
             />
           </div>
 

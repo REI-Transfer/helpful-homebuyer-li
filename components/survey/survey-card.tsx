@@ -6,19 +6,77 @@ import { Button } from "@/components/ui/button"
 import { captureTrackingData, getIPAddress } from "@/lib/tracking"
 import { Input } from "@/components/ui/input"
 import { AddressAutocomplete, type AddressDetails, type ServiceArea } from "./address-autocomplete"
+import {
+  ASKING_PRICE_OPTIONS,
+  calculateLeadScore,
+  getLeadQuality,
+  getMetaEventConfig,
+  isPropertyTypeAccepted,
+  makeEventId,
+  type Stage2Data,
+} from "@/lib/scoring"
 
-interface SurveyData {
+// ---------- Service-area lock (hardcoded for Helpful Homebuyer LI) ----------
+// Long Island only: Nassau + Suffolk counties.
+// Google Places returns county as administrative_area_level_2, formatted
+// like "Nassau County" or "Suffolk County". We uppercase and strip the
+// trailing " County" before comparing against this set.
+const ALLOWED_COUNTIES: Set<string> = new Set(["NASSAU", "SUFFOLK"])
+
+function normalizeCounty(raw: string): string {
+  return raw.trim().toUpperCase().replace(/\s*COUNTY$/i, "").trim()
+}
+
+// ---------- Env-gated optional features ----------
+// NEXT_PUBLIC_SHOW_OWNERSHIP_LENGTH=true -> adds "How long have you owned?" as a Stage 2 step
+const SHOW_OWNERSHIP_LENGTH = process.env.NEXT_PUBLIC_SHOW_OWNERSHIP_LENGTH === "true"
+
+// ---------- Type definitions ----------
+interface Stage1State {
   address: string
-  propertyType: string
+  state: string
+  county: string
+  city: string
   isLegalOwner: string
   listedOnMarket: string
-  timeline: string
-  condition: string
-  reason: string
-  name: string
+  firstName: string
+  lastName: string
   email: string
   phone: string
+  tcpaConsent: boolean
 }
+
+interface Stage2State {
+  propertyType: string
+  timeline: string
+  askingPrice: string
+  ownershipLength: string
+  condition: string
+  reason: string
+}
+
+const INITIAL_STAGE1: Stage1State = {
+  address: "", state: "", county: "", city: "",
+  isLegalOwner: "", listedOnMarket: "",
+  firstName: "", lastName: "", email: "", phone: "",
+  tcpaConsent: false,
+}
+const INITIAL_STAGE2: Stage2State = {
+  propertyType: "", timeline: "", askingPrice: "", ownershipLength: "", condition: "", reason: "",
+}
+
+// ---------- Option lists ----------
+const LEGAL_OWNER_OPTIONS = [
+  { id: "yes-owner", label: "Yes, I am the legal homeowner" },
+  { id: "yes-family", label: "Yes, I have legal authority (POA, executor, etc.)" },
+  { id: "no", label: "No, I am not the legal owner" },
+]
+
+const LISTED_OPTIONS = [
+  { id: "not-listed", label: "No, it's not listed" },
+  { id: "listed-realtor", label: "Yes, listed with a realtor" },
+  { id: "listed-fsbo", label: "Yes, listed for sale by owner" },
+]
 
 const PROPERTY_TYPE_OPTIONS = [
   { id: "single-family", label: "Single Family Home" },
@@ -29,38 +87,27 @@ const PROPERTY_TYPE_OPTIONS = [
   { id: "other", label: "Other" },
 ]
 
-const LEGAL_OWNER_OPTIONS = [
-  { id: "yes-owner", label: "Yes, I am the legal homeowner" },
-  { id: "yes-family", label: "Yes, I am a family member with the legal right to sell" },
-  { id: "no", label: "No, I am not" },
-]
-
-const LISTED_OPTIONS = [
-  { id: "not-listed", label: "No, it is not listed" },
-  { id: "listed-realtor", label: "Yes, listed with a realtor" },
-  { id: "listed-fsbo", label: "Yes, listed for sale by owner" },
-]
-
 const TIMELINE_OPTIONS = [
-  { id: "asap", label: "ASAP (Within 7 days)" },
-  { id: "2-weeks", label: "Within 2 weeks" },
+  { id: "asap", label: "ASAP — within 7 days" },
   { id: "30-days", label: "Within 30 days" },
   { id: "60-days", label: "Within 60 days" },
+  { id: "90-days", label: "Within 90 days" },
   { id: "flexible", label: "I'm flexible" },
 ]
 
 const CONDITION_OPTIONS = [
-  { id: "excellent", label: "Excellent - Move-in ready" },
-  { id: "good", label: "Good - Minor repairs needed" },
-  { id: "fair", label: "Fair - Needs some work" },
-  { id: "poor", label: "Poor - Major repairs needed" },
-  { id: "distressed", label: "Distressed - Significant issues" },
+  { id: "excellent", label: "Excellent — Move-in ready" },
+  { id: "good", label: "Good — Minor cosmetic touch-ups" },
+  { id: "fair", label: "Fair — Needs some work" },
+  { id: "poor", label: "Poor — Major repairs needed" },
+  { id: "distressed", label: "Distressed — Significant issues" },
 ]
 
 const REASON_OPTIONS = [
   { id: "foreclosure", label: "Facing foreclosure" },
   { id: "behind-payments", label: "Behind on payments" },
   { id: "inherited", label: "Inherited property" },
+  { id: "tired-landlord", label: "Tired landlord / bad tenants" },
   { id: "divorce", label: "Divorce or separation" },
   { id: "relocation", label: "Job relocation" },
   { id: "downsizing", label: "Downsizing" },
@@ -68,55 +115,29 @@ const REASON_OPTIONS = [
   { id: "other", label: "Other" },
 ]
 
-// ─── Lead scoring (browser-side) ───────────────────────────────────────
-// Standard scoring matrix used across all REI Transfer client surveys.
-// Applied automatically when this template is cloned for a new client.
-const SCORE_TIMELINE: Record<string, number> = {
-  'asap': 3, '2-weeks': 2, '30-days': 1, '60-days': 0, 'flexible': 0,
-}
-const SCORE_REASON: Record<string, number> = {
-  'foreclosure': 3, 'behind-payments': 3,
-  'inherited': 2, 'repairs': 2,
-  'other': 1,
-  'relocation': 0, 'divorce': 0, 'downsizing': 0,
-}
-const SCORE_CONDITION: Record<string, number> = {
-  'poor': 1, 'distressed': 1,
-  'fair': 0, 'good': 0, 'excellent': 0,
-}
-function calculateLeadScore(d: SurveyData): number {
-  const t = SCORE_TIMELINE[d.timeline] ?? 0
-  const r = SCORE_REASON[d.reason] ?? 0
-  const c = SCORE_CONDITION[d.condition] ?? 0
-  return Math.min(10, t + r + c)
-}
-function isQualifiedForMeta(d: SurveyData): boolean {
-  const okType = d.propertyType === 'single-family' || d.propertyType === 'multi-family'
-  const okListed = d.listedOnMarket === 'not-listed'
-  const okOwner = d.isLegalOwner !== 'no'
-  return okType && okListed && okOwner
-}
-function leadQuality(score: number): 'premium' | 'standard' | 'low' {
-  if (score >= 6) return 'premium'
-  if (score >= 2) return 'standard'
-  return 'low'
-}
-function disqualifyReasonFor(d: SurveyData): string {
-  if (d.propertyType !== 'single-family' && d.propertyType !== 'multi-family') return 'property_type'
-  if (d.listedOnMarket !== 'not-listed') return 'listed'
-  if (d.isLegalOwner === 'no') return 'not_owner'
-  return 'unknown'
-}
-// ──────────────────────────────────────────────────────────────────────
+const OWNERSHIP_LENGTH_OPTIONS = [
+  { id: "1-3-years", label: "Less than 3 years" },
+  { id: "3-5-years", label: "3 to 5 years" },
+  { id: "5-10-years", label: "5 to 10 years" },
+  { id: "10-plus-years", label: "10+ years" },
+]
 
-// Valid US area codes
-// Disposable email domains
+// Dynamic Stage 2 step order. Ownership-length slots in after asking-price
+// (still a "your situation" question, before property details) when enabled.
+type Stage2StepKey = "timeline" | "askingPrice" | "ownershipLength" | "propertyType" | "condition" | "reason"
+const STAGE2_STEPS: Stage2StepKey[] = [
+  "timeline",
+  "askingPrice",
+  ...(SHOW_OWNERSHIP_LENGTH ? (["ownershipLength"] as const) : []),
+  "propertyType",
+  "condition",
+  "reason",
+]
+
+// ---------- Anti-spam / validation helpers ----------
 const DISPOSABLE_DOMAINS = new Set(["mailinator.com","guerrillamail.com","tempmail.com","throwaway.email","yopmail.com","sharklasers.com","guerrillamail.info","grr.la","guerrillamail.biz","guerrillamail.de","guerrillamail.net","guerrillamail.org","spam4.me","trashmail.com","trashmail.me","trashmail.net","mytemp.email","mohmal.com","tempail.com","dispostable.com","maildrop.cc","10minutemail.com","temp-mail.org","fakeinbox.com","mailnesia.com","getnada.com","emailondeck.com","33mail.com","harakirimail.com","jetable.org","meltmail.com","mailcatch.com","tempinbox.com","spamgourmet.com","mailexpire.com","incognitomail.org","getairmail.com","mailnull.com","safeemail.xyz","tempmailo.com","burnermail.io"])
-
-// Profanity / spam word list
 const BLOCKED_WORDS = new Set(["fuck","shit","ass","damn","bitch","bastard","dick","cock","pussy","cunt","whore","slut","fag","nigger","nigga","retard","penis","vagina","anus","dildo","porn","xxx","viagra","cialis","casino","bitcoin","crypto","forex","mlm","scam","spam","test123","asdf","qwerty","aaaaaa","zzzzzz","abcdef","123456"])
 
-// Format phone as (XXX) XXX-XXXX
 function formatPhoneNumber(value: string): string {
   let digits = value.replace(/\D/g, "")
   if (digits.startsWith("1")) digits = digits.slice(1)
@@ -127,12 +148,10 @@ function formatPhoneNumber(value: string): string {
   return `(${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6, 10)}`
 }
 
-// Validate US phone number
 function validatePhone(phone: string): { valid: boolean; msg: string } {
   const digits = phone.replace(/\D/g, "").replace(/^1/, "")
   if (digits.length !== 10) return { valid: false, msg: "Please enter a valid 10-digit US phone number." }
   const area = digits.slice(0, 3)
-  // NANP structural rules: area code can't start with 0 or 1
   if (area[0] === "0" || area[0] === "1") return { valid: false, msg: `Area code (${area}) doesn't appear to be valid.` }
   if (/^(\d)\1{9}$/.test(digits)) return { valid: false, msg: "Please enter a real phone number." }
   if (["1234567890", "0123456789", "9876543210"].includes(digits)) return { valid: false, msg: "Please enter a real phone number." }
@@ -142,7 +161,6 @@ function validatePhone(phone: string): { valid: boolean; msg: string } {
   return { valid: true, msg: "" }
 }
 
-// Validate email
 function validateEmail(email: string): { valid: boolean; msg: string } {
   if (!email || email.trim() === "") return { valid: false, msg: "Email is required." }
   const e = email.trim().toLowerCase()
@@ -157,17 +175,9 @@ function validateEmail(email: string): { valid: boolean; msg: string } {
   for (const part of emailParts) {
     if (BLOCKED_WORDS.has(part)) return { valid: false, msg: "Please enter a valid email address." }
   }
-  const localPart = e.split("@")[0]
-  const domainName = domain.split(".")[0]
-  for (const word of BLOCKED_WORDS) {
-    if (word.length >= 4 && (localPart.includes(word) || domainName.includes(word))) {
-      return { valid: false, msg: "Please enter a valid email address." }
-    }
-  }
   return { valid: true, msg: "" }
 }
 
-// Validate name
 function validateName(name: string): { valid: boolean; msg: string } {
   const trimmed = name.trim()
   if (!trimmed) return { valid: false, msg: "Name is required." }
@@ -176,252 +186,385 @@ function validateName(name: string): { valid: boolean; msg: string } {
   for (const word of words) {
     if (BLOCKED_WORDS.has(word)) return { valid: false, msg: "Please enter your real name." }
   }
-  if (/(.)\\1{4,}/.test(trimmed)) return { valid: false, msg: "Please enter your real name." }
+  if (/(.)\1{4,}/.test(trimmed)) return { valid: false, msg: "Please enter your real name." }
   if (/^\d+$/.test(trimmed)) return { valid: false, msg: "Please enter your real name, not a number." }
   return { valid: true, msg: "" }
 }
 
+// ---------- Meta Pixel firing helper ----------
+function fireMetaEvent(eventName: 'Lead' | 'LeadLowIntent' | 'LeadEarly', params: Record<string, unknown>, eventId: string) {
+  if (typeof window === "undefined" || !window.fbq) return
+  const isStandard = eventName === 'Lead'
+  if (isStandard) {
+    window.fbq('track', eventName, params, { eventID: eventId })
+  } else {
+    window.fbq('trackCustom', eventName, params, { eventID: eventId })
+  }
+}
+
+// ---------- Component ----------
 interface SurveyCardProps {
   phoneDisplay?: string
   phoneHref?: string
   serviceAreas?: ServiceArea[]
+  companyName?: string
 }
 
-export function SurveyCard({ phoneDisplay = "(800) 000-0000", phoneHref = "8000000000", serviceAreas = [] }: SurveyCardProps) {
-  const [step, setStep] = useState(1)
-  const [surveyData, setSurveyData] = useState<SurveyData>({
-    address: "",
-    propertyType: "",
-    isLegalOwner: "",
-    listedOnMarket: "",
-    timeline: "",
-    condition: "",
-    reason: "",
-    name: "",
-    email: "",
-    phone: "",
-  })
+export function SurveyCard({
+  phoneDisplay = "(800) 000-0000",
+  phoneHref = "8000000000",
+  serviceAreas = [],
+  companyName = "Helpful Homebuyer LI",
+}: SurveyCardProps) {
+  // ---- Stage state ----
+  const [stage, setStage] = useState<1 | 2>(1)
+  const [stage1Step, setStage1Step] = useState(1) // 1=address, 2=owner, 3=listed, 4=contact
+  const [stage2Step, setStage2Step] = useState(1) // 1..N within stage 2 (N depends on env gates)
+  const totalStage2Steps = STAGE2_STEPS.length
+  const currentStage2Key: Stage2StepKey | undefined = STAGE2_STEPS[stage2Step - 1]
+
+  // ---- Data state ----
+  const [stage1Data, setStage1Data] = useState<Stage1State>(INITIAL_STAGE1)
+  const [stage2Data, setStage2Data] = useState<Stage2State>(INITIAL_STAGE2)
+
+  // ---- Submission state ----
   const [isSubmitted, setIsSubmitted] = useState(false)
   const [isDisqualified, setIsDisqualified] = useState(false)
   const [disqualifyReason, setDisqualifyReason] = useState("")
   const [addressVerified, setAddressVerified] = useState(false)
   const [addressOutOfArea, setAddressOutOfArea] = useState(false)
   const [isSubmitting, setIsSubmitting] = useState(false)
-  const [validationErrors, setValidationErrors] = useState<{[key: string]: string}>({})
+  const [validationErrors, setValidationErrors] = useState<Record<string, string>>({})
+
+  // ---- Tracking ----
   const formStartTime = useRef<number>(Date.now())
   const trackingRef = useRef(captureTrackingData())
+  const stage1EventIdRef = useRef<string>("")
+  const stage1FiredRef = useRef<boolean>(false)
   useEffect(() => {
     getIPAddress().then((ip) => { trackingRef.current.ip = ip })
   }, [])
   const [honeypot, setHoneypot] = useState("")
 
-  const totalSteps = 8
+  // ============================================================
+  // STAGE 1 SUB-STEP HANDLERS
+  // ============================================================
 
-  const handleNext = async () => {
-    // Block out-of-area addresses on Continue with a disqualify screen
-    if (step === 1 && addressOutOfArea) {
-      setDisqualifyReason("outOfArea")
-      setIsDisqualified(true)
+  // Address selection auto-advances to owner question.
+  // Defense-in-depth: even though Google Places is locked to longIslandBounds
+  // in address-autocomplete.tsx, we still check the returned county against
+  // ALLOWED_COUNTIES here (Nassau + Suffolk) and route off-target picks to
+  // the out-of-area disqualify screen.
+  const handleAddressSelect = (address: string, details: AddressDetails) => {
+    setStage1Data({
+      ...stage1Data,
+      address,
+      state: details.state || "",
+      county: details.county || "",
+      city: details.city || "",
+    })
+
+    const countyKey = normalizeCounty(details.county || "")
+    if (!ALLOWED_COUNTIES.has(countyKey)) {
+      setAddressVerified(true)
+      setAddressOutOfArea(true)
+      setTimeout(() => { setDisqualifyReason("outOfArea"); setIsDisqualified(true) }, 300)
       return
     }
-    if (step === 8) {
-      const errors: {[key: string]: string} = {}
 
-      const nameCheck = validateName(surveyData.name)
-      if (!nameCheck.valid) errors.name = nameCheck.msg
-
-      const emailCheck = validateEmail(surveyData.email)
-      if (!emailCheck.valid) errors.email = emailCheck.msg
-
-      const phoneCheck = validatePhone(surveyData.phone)
-      if (!phoneCheck.valid) errors.phone = phoneCheck.msg
-
-      if (Object.keys(errors).length > 0) {
-        setValidationErrors(errors)
-        return
-      }
-
-      const timeSpent = Date.now() - formStartTime.current
-      if (timeSpent < 3000) {
-        setIsSubmitted(true)
-        return
-      }
-
-      if (honeypot) {
-        setIsSubmitted(true)
-        return
-      }
-
-      setIsSubmitting(true)
-
-      try {
-        const nameParts = surveyData.name.trim().split(/\s+/)
-        const score = calculateLeadScore(surveyData)
-        const quality = leadQuality(score)
-        const qualified = isQualifiedForMeta(surveyData)
-        const dqReason = qualified ? null : disqualifyReasonFor(surveyData)
-        const eventId = `lead-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`
-        const payload = {
-          firstName: nameParts[0] || '',
-          lastName: nameParts.slice(1).join(' ') || '',
-          name: surveyData.name,
-          email: surveyData.email,
-          phone: surveyData.phone,
-          address: surveyData.address,
-          propertyType: surveyData.propertyType,
-          isLegalOwner: surveyData.isLegalOwner,
-          condition: surveyData.condition,
-          timeline: surveyData.timeline,
-          reason: surveyData.reason,
-          source: 'Survey Form',
-          submittedAt: new Date().toISOString(),
-          qualified,
-          lead_score: score,
-          lead_quality: quality,
-          disqualify_reason: dqReason,
-          meta_event_id: eventId,
-          meta_event_name: qualified ? 'Lead' : 'LeadLowIntent',
-          meta_value: qualified ? score * 25 : 0,
-          ...trackingRef.current,
-        }
-        // Fire weighted Meta Pixel event (browser-side; CAPI is a separate later phase)
-        if (typeof window !== 'undefined' && (window as { fbq?: (...args: unknown[]) => void }).fbq) {
-          const fbq = (window as { fbq: (...args: unknown[]) => void }).fbq
-          // content_name uses the brand from config so each cloned client gets the right label automatically
-          const brandName = (typeof window !== 'undefined' && (window as unknown as { __NEXT_DATA__?: { runtimeConfig?: { companyName?: string } } }).__NEXT_DATA__?.runtimeConfig?.companyName) || 'REI Survey'
-          if (qualified) {
-            fbq('track', 'Lead', {
-              value: score * 25, currency: 'USD',
-              content_name: `${brandName} Survey`, content_category: 'real_estate',
-              lead_score: score, lead_quality: quality,
-            }, { eventID: eventId })
-          } else {
-            fbq('trackCustom', 'LeadLowIntent', {
-              content_name: `${brandName} Survey`, content_category: 'real_estate',
-              disqualify_reason: dqReason, lead_score: score,
-            }, { eventID: eventId })
-          }
-        }
-        await fetch('/api/submit', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
-        })
-      } catch (e) {
-        // Continue to thank-you even if webhook fails
-      }
-
-      window.location.href = '/thank-you'
-    } else if (step < totalSteps) {
-      setStep(step + 1)
-    }
+    setAddressVerified(true)
+    setAddressOutOfArea(false)
+    setTimeout(() => setStage1Step(2), 350)
   }
 
-  const handleBack = () => {
-    if (step > 1) setStep(step - 1)
-  }
-
-  const canProceed = () => {
-    switch (step) {
-      case 1: return surveyData.address.trim().length > 0 && addressVerified
-      case 2: return surveyData.propertyType !== ""
-      case 3: return surveyData.isLegalOwner !== ""
-      case 4: return surveyData.listedOnMarket !== ""
-      case 5: return surveyData.timeline !== ""
-      case 6: return surveyData.condition !== ""
-      case 7: return surveyData.reason !== ""
-      case 8: return (
-        surveyData.name.trim().length > 0 &&
-        surveyData.email.trim().length > 0 &&
-        surveyData.phone.trim().length > 0
-      )
-      default: return false
-    }
-  }
-
-  const handleOptionSelect = (field: keyof SurveyData, value: string) => {
-    setSurveyData({ ...surveyData, [field]: value })
-
-    if (field === "propertyType" && ["condo-townhouse", "mobile-home", "land", "other"].includes(value)) {
-      setTimeout(() => { setDisqualifyReason("propertyType"); setIsDisqualified(true) }, 300)
-      return
-    }
-    if (field === "listedOnMarket" && ["listed-realtor", "listed-fsbo"].includes(value)) {
-      setTimeout(() => { setDisqualifyReason("listed"); setIsDisqualified(true) }, 300)
-      return
-    }
-    if (field === "isLegalOwner" && value === "no") {
+  // Owner selection — DQ on "no", else auto-advance
+  const handleOwnerSelect = (value: string) => {
+    setStage1Data({ ...stage1Data, isLegalOwner: value })
+    if (value === "no") {
       setTimeout(() => { setDisqualifyReason("notOwner"); setIsDisqualified(true) }, 300)
       return
     }
-
-    setTimeout(() => { if (step < totalSteps) setStep(step + 1) }, 300)
+    setTimeout(() => setStage1Step(3), 350)
   }
 
-  const handleAddressSelect = (address: string, _details: AddressDetails) => {
-    setSurveyData({ ...surveyData, address })
-    setAddressVerified(true)
-    setAddressOutOfArea(false)
-    setTimeout(() => { setStep(2) }, 300)
+  // Listed selection — DQ on listed, else auto-advance to contact
+  const handleListedSelect = (value: string) => {
+    setStage1Data({ ...stage1Data, listedOnMarket: value })
+    if (value === "listed-realtor" || value === "listed-fsbo") {
+      setTimeout(() => { setDisqualifyReason("listed"); setIsDisqualified(true) }, 300)
+      return
+    }
+    setTimeout(() => setStage1Step(4), 350)
   }
 
+  // Contact submit — fires LeadEarly + sends partial webhook + advances to Stage 2
+  const handleContactSubmit = async () => {
+    const errors: Record<string, string> = {}
+    const fnCheck = validateName(stage1Data.firstName)
+    if (!fnCheck.valid) errors.firstName = fnCheck.msg.replace(/full name/g, "first name")
+    const lnCheck = validateName(stage1Data.lastName)
+    if (!lnCheck.valid) errors.lastName = lnCheck.msg.replace(/full name/g, "last name")
+    const eCheck = validateEmail(stage1Data.email)
+    if (!eCheck.valid) errors.email = eCheck.msg
+    const pCheck = validatePhone(stage1Data.phone)
+    if (!pCheck.valid) errors.phone = pCheck.msg
+    if (!stage1Data.tcpaConsent) errors.tcpaConsent = "Please confirm to continue."
+
+    if (Object.keys(errors).length > 0) {
+      setValidationErrors(errors)
+      return
+    }
+    setValidationErrors({})
+
+    if (Date.now() - formStartTime.current < 3000) { setIsSubmitted(true); return }
+    if (honeypot) { setIsSubmitted(true); return }
+
+    setIsSubmitting(true)
+
+    const earlyEventId = makeEventId('lead-early')
+    stage1EventIdRef.current = earlyEventId
+    fireMetaEvent('LeadEarly', {
+      content_name: `${companyName} Stage 1`,
+      content_category: 'partial-lead',
+    }, earlyEventId)
+    stage1FiredRef.current = true
+
+    try {
+      const fullName = `${stage1Data.firstName.trim()} ${stage1Data.lastName.trim()}`.trim()
+      const payload = {
+        lead_stage: 'early',
+        firstName: stage1Data.firstName.trim(),
+        lastName: stage1Data.lastName.trim(),
+        name: fullName,
+        email: stage1Data.email.trim().toLowerCase(),
+        phone: stage1Data.phone,
+        address: stage1Data.address,
+        state: stage1Data.state,
+        county: stage1Data.county,
+        city: stage1Data.city,
+        isLegalOwner: stage1Data.isLegalOwner,
+        listedOnMarket: stage1Data.listedOnMarket,
+        tcpa_consent: stage1Data.tcpaConsent,
+        source: `${companyName} - Survey (Stage 1)`,
+        submittedAt: new Date().toISOString(),
+        meta_event_id: earlyEventId,
+        meta_event_name: 'LeadEarly',
+        meta_value: 0,
+        ...trackingRef.current,
+      }
+      await fetch('/api/submit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+    } catch {
+      // partial fail shouldn't block user
+    }
+
+    setIsSubmitting(false)
+    setStage(2)
+    setStage2Step(1)
+  }
+
+  // ============================================================
+  // STAGE 2 SUBMIT
+  // ============================================================
+  const handleStage2Submit = async () => {
+    setIsSubmitting(true)
+
+    const eventCfg = getMetaEventConfig(stage2Data as Stage2Data)
+    const score = calculateLeadScore(stage2Data as Stage2Data)
+    const quality = getLeadQuality(stage2Data as Stage2Data)
+
+    const completeEventId = makeEventId('lead-complete')
+    fireMetaEvent(eventCfg.eventName, {
+      value: eventCfg.value,
+      currency: 'USD',
+      content_name: `${companyName} Survey`,
+      content_category: 'qualified-lead',
+      lead_score: score,
+      lead_quality: quality,
+    }, completeEventId)
+
+    try {
+      const fullName = `${stage1Data.firstName.trim()} ${stage1Data.lastName.trim()}`.trim()
+      const payload = {
+        lead_stage: 'complete',
+        firstName: stage1Data.firstName.trim(),
+        lastName: stage1Data.lastName.trim(),
+        name: fullName,
+        email: stage1Data.email.trim().toLowerCase(),
+        phone: stage1Data.phone,
+        address: stage1Data.address,
+        state: stage1Data.state,
+        county: stage1Data.county,
+        city: stage1Data.city,
+        isLegalOwner: stage1Data.isLegalOwner,
+        listedOnMarket: stage1Data.listedOnMarket,
+        tcpa_consent: stage1Data.tcpaConsent,
+        propertyType: stage2Data.propertyType,
+        timeline: stage2Data.timeline,
+        askingPrice: stage2Data.askingPrice,
+        ownershipLength: stage2Data.ownershipLength,
+        condition: stage2Data.condition,
+        reason: stage2Data.reason,
+        qualified: eventCfg.qualified,
+        lead_score: score,
+        lead_quality: quality,
+        disqualify_reason: eventCfg.qualified ? null : (
+          isPropertyTypeAccepted(stage2Data.propertyType) ? 'low-score' : `propertyType-${stage2Data.propertyType}`
+        ),
+        meta_event_id: completeEventId,
+        meta_event_name: eventCfg.eventName,
+        meta_value: eventCfg.value,
+        stage1_event_id: stage1EventIdRef.current,
+        source: `${companyName} - Survey (Complete)`,
+        submittedAt: new Date().toISOString(),
+        ...trackingRef.current,
+      }
+      await fetch('/api/submit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+    } catch {
+      // continue to thank-you regardless
+    }
+
+    window.location.href = '/thank-you'
+  }
+
+  const handleStage2OptionSelect = (field: keyof Stage2State, value: string) => {
+    const next = { ...stage2Data, [field]: value }
+    setStage2Data(next)
+    setTimeout(() => {
+      if (stage2Step < totalStage2Steps) setStage2Step(stage2Step + 1)
+      else {
+        // last step — submit using fresh data
+        const eventCfg = getMetaEventConfig(next as Stage2Data)
+        const score = calculateLeadScore(next as Stage2Data)
+        const quality = getLeadQuality(next as Stage2Data)
+        ;(async () => {
+          setIsSubmitting(true)
+          const completeEventId = makeEventId('lead-complete')
+          fireMetaEvent(eventCfg.eventName, {
+            value: eventCfg.value, currency: 'USD',
+            content_name: `${companyName} Survey`,
+            content_category: 'qualified-lead',
+            lead_score: score, lead_quality: quality,
+          }, completeEventId)
+          try {
+            const fullName = `${stage1Data.firstName.trim()} ${stage1Data.lastName.trim()}`.trim()
+            const payload = {
+              lead_stage: 'complete',
+              firstName: stage1Data.firstName.trim(),
+              lastName: stage1Data.lastName.trim(),
+              name: fullName,
+              email: stage1Data.email.trim().toLowerCase(),
+              phone: stage1Data.phone,
+              address: stage1Data.address,
+              state: stage1Data.state, county: stage1Data.county, city: stage1Data.city,
+              isLegalOwner: stage1Data.isLegalOwner,
+              listedOnMarket: stage1Data.listedOnMarket,
+              tcpa_consent: stage1Data.tcpaConsent,
+              propertyType: next.propertyType,
+              timeline: next.timeline,
+              askingPrice: next.askingPrice,
+              ownershipLength: next.ownershipLength,
+              condition: next.condition,
+              reason: next.reason,
+              qualified: eventCfg.qualified,
+              lead_score: score, lead_quality: quality,
+              disqualify_reason: eventCfg.qualified ? null : (
+                isPropertyTypeAccepted(next.propertyType) ? 'low-score' : `propertyType-${next.propertyType}`
+              ),
+              meta_event_id: completeEventId,
+              meta_event_name: eventCfg.eventName,
+              meta_value: eventCfg.value,
+              stage1_event_id: stage1EventIdRef.current,
+              source: `${companyName} - Survey (Complete)`,
+              submittedAt: new Date().toISOString(),
+              ...trackingRef.current,
+            }
+            await fetch('/api/submit', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(payload),
+            })
+          } catch {}
+          window.location.href = '/thank-you'
+        })()
+      }
+    }, 350)
+  }
+
+  const handleStage2Back = () => {
+    if (stage2Step > 1) setStage2Step(stage2Step - 1)
+  }
+
+  const handleStage1Back = () => {
+    if (stage1Step > 1) setStage1Step(stage1Step - 1)
+  }
+
+  // ============================================================
+  // RENDER HELPERS
+  // ============================================================
+  // BIG option button — chunky tap target
   const renderOptionButton = (
     option: { id: string; label: string },
     selectedValue: string,
-    field: keyof SurveyData
+    onClick: () => void,
   ) => (
     <button
       key={option.id}
-      onClick={() => handleOptionSelect(field, option.id)}
-      className={`w-full rounded-xl border px-4 py-3 text-left text-sm font-medium transition-all ${
+      onClick={onClick}
+      className={`w-full rounded-2xl border-2 px-6 py-5 text-left text-base font-semibold transition-all active:scale-[0.99] ${
         selectedValue === option.id
-          ? "border-[var(--accent)] bg-[var(--accent)]/10 text-gray-900"
-          : "border-gray-200 bg-white text-gray-700 hover:border-[var(--accent)]/50 hover:bg-gray-50"
+          ? "border-[var(--accent)] bg-[var(--accent)]/10 text-gray-900 shadow-md"
+          : "border-gray-200 bg-white text-gray-800 hover:border-[var(--accent)]/60 hover:bg-gray-50 hover:shadow-sm"
       }`}
     >
       {option.label}
     </button>
   )
 
+  // ============================================================
+  // DISQUALIFY SCREEN
+  // ============================================================
   if (isDisqualified) {
     const disqualifyMessages: Record<string, { title: string; message: string; detail: string }> = {
       notOwner: {
         title: "We're Unable to Assist",
-        message: "Unfortunately, we can only work with individuals who have the legal right to sell the property.",
-        detail: "If you believe you have legal authority to sell (such as power of attorney, executor of estate, or court-appointed representative), please contact us directly.",
+        message: "We can only work with individuals who have the legal right to sell the property.",
+        detail: "If you have legal authority (power of attorney, executor, or court-appointed representative), please contact us directly.",
       },
       listed: {
         title: "We Can't Make an Offer Right Now",
-        message: "We're unable to make an offer on properties that are currently listed on the market.",
-        detail: "If your listing expires or you decide to take it off the market, we'd love to help. Feel free to reach out to us at that time.",
-      },
-      propertyType: {
-        title: "We're Unable to Assist",
-        message: "Unfortunately, we're not able to make an offer on this type of property at this time.",
-        detail: "We primarily purchase single-family homes, multi-family properties, and condos/townhouses. If you have a different property you'd like to sell, feel free to reach out.",
+        message: "We're unable to make an offer on properties currently listed on the market.",
+        detail: "If your listing expires or you take it off the market, we'd love to help. Reach out to us at that time.",
       },
       outOfArea: {
         title: "Outside Our Service Area",
-        message: "Unfortunately, we don't currently buy properties in that area.",
-        detail: "We only serve select markets at this time. If you believe your property is within our coverage area, please try a different address or give us a call.",
+        message: "We currently purchase properties in Nassau and Suffolk counties on Long Island, NY.",
+        detail: "If you believe your property is in Nassau or Suffolk County, please try a different address — sometimes Google Places matches a similar address from another area.",
       },
     }
     const msg = disqualifyMessages[disqualifyReason] || disqualifyMessages.notOwner
 
     return (
-      <div className="w-full max-w-2xl rounded-2xl border border-gray-200 bg-white p-6 shadow-lg">
-        <div className="flex flex-col items-center gap-5 text-center">
-          <div className="flex h-14 w-14 items-center justify-center rounded-full bg-red-100">
-            <XCircle className="h-7 w-7 text-red-500" />
+      <div className="w-full max-w-2xl rounded-2xl border-2 border-gray-200 bg-white p-8 shadow-lg">
+        <div className="flex flex-col items-center gap-6 text-center">
+          <div className="flex h-16 w-16 items-center justify-center rounded-full bg-red-100">
+            <XCircle className="h-8 w-8 text-red-500" />
           </div>
           <div>
-            <h2 className="text-2xl font-semibold text-gray-900">{msg.title}</h2>
-            <p className="mt-2 text-gray-600">{msg.message}</p>
+            <h2 className="text-3xl font-bold text-gray-900">{msg.title}</h2>
+            <p className="mt-3 text-base text-gray-600">{msg.message}</p>
             <p className="mt-4 text-sm text-gray-500">{msg.detail}</p>
           </div>
           <a
             href={`tel:${phoneHref}`}
-            className="mt-2 inline-flex items-center gap-2 rounded-xl bg-[var(--accent)] px-6 py-3 text-white hover:opacity-90 transition-opacity"
+            className="mt-2 inline-flex items-center gap-2 rounded-2xl bg-[var(--accent)] px-8 py-4 text-lg font-bold text-white hover:opacity-90 transition-opacity shadow-md"
           >
             Call Us: {phoneDisplay}
           </a>
@@ -430,222 +573,356 @@ export function SurveyCard({ phoneDisplay = "(800) 000-0000", phoneHref = "80000
     )
   }
 
+  // ============================================================
+  // ANTI-SPAM BAILED-FAKE SCREEN (no webhooks fired)
+  // ============================================================
   if (isSubmitted) {
     return (
-      <div className="w-full max-w-2xl rounded-2xl border border-gray-200 bg-white p-6 shadow-lg">
-        <div className="flex flex-col items-center gap-5 text-center">
-          <div className="flex h-14 w-14 items-center justify-center rounded-full bg-[#22c55e]/10">
-            <Check className="h-7 w-7 text-[#22c55e]" />
+      <div className="w-full max-w-2xl rounded-2xl border-2 border-gray-200 bg-white p-8 shadow-lg">
+        <div className="flex flex-col items-center gap-6 text-center">
+          <div className="flex h-16 w-16 items-center justify-center rounded-full bg-[#22c55e]/10">
+            <Check className="h-8 w-8 text-[#22c55e]" />
           </div>
           <div>
-            <h2 className="text-2xl font-semibold text-gray-900">Thank You, {surveyData.name}!</h2>
-            <p className="mt-2 text-gray-600">We've received your information and will be in touch shortly.</p>
-            <p className="mt-4 text-sm text-gray-500">One of our team members will call you within 24 hours.</p>
+            <h2 className="text-3xl font-bold text-gray-900">Thank You!</h2>
+            <p className="mt-3 text-base text-gray-600">We've received your information and will be in touch shortly.</p>
           </div>
         </div>
       </div>
     )
   }
 
-  return (
-    <div className="w-full rounded-2xl border border-gray-200 bg-white p-6 shadow-lg">
-      <div className="flex flex-col gap-5">
-        {/* Progress indicator */}
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Home className="h-5 w-5 text-[var(--accent)]" />
-            <span className="text-sm text-gray-600">Step {step} of {totalSteps}</span>
+  // ============================================================
+  // STAGE 1 — auto-advancing single-question-per-screen
+  // No progress bar shown until Stage 2.
+  // ============================================================
+  if (stage === 1) {
+    return (
+      <div className="w-full rounded-2xl border-2 border-gray-200 bg-white p-8 shadow-lg">
+        <div className="flex flex-col gap-6">
+          {/* Header with Home icon — NO progress bar in Stage 1 */}
+          <div className="flex items-center gap-3">
+            <Home className="h-6 w-6 text-[var(--accent)]" />
+            <span className="text-base font-medium text-gray-700">Get your free cash offer</span>
           </div>
-          <div className="flex gap-1">
-            {Array.from({ length: totalSteps }).map((_, i) => (
-              <div
-                key={i}
-                className={`h-1.5 w-6 rounded-full transition-colors ${
-                  i < step ? "bg-[var(--accent)]" : "bg-gray-200"
-                }`}
+
+          {/* Sub-step 1: Address */}
+          {stage1Step === 1 && (
+            <div className="flex flex-col gap-4">
+              <div>
+                <h2 className="text-3xl font-bold text-gray-900 leading-tight">What's your property address?</h2>
+                <p className="mt-2 text-base text-gray-500">Start typing and select your address from the list.</p>
+              </div>
+              <AddressAutocomplete
+                value={stage1Data.address}
+                onChange={(address) => {
+                  setStage1Data({ ...stage1Data, address })
+                  setAddressVerified(false)
+                  setAddressOutOfArea(false)
+                }}
+                onSelect={handleAddressSelect}
+                onOutOfArea={(addr) => {
+                  setStage1Data({ ...stage1Data, address: addr })
+                  setAddressVerified(true)
+                  setAddressOutOfArea(true)
+                  setTimeout(() => { setDisqualifyReason("outOfArea"); setIsDisqualified(true) }, 300)
+                }}
+                serviceAreas={serviceAreas}
+                placeholder="Start typing your address..."
               />
-            ))}
+            </div>
+          )}
+
+          {/* Sub-step 2: Legal owner */}
+          {stage1Step === 2 && (
+            <div className="flex flex-col gap-4">
+              <div>
+                <h2 className="text-3xl font-bold text-gray-900 leading-tight">Are you the legal homeowner?</h2>
+                <p className="mt-2 text-base text-gray-500">This helps us know we can put together an offer.</p>
+              </div>
+              <div className="flex flex-col gap-3">
+                {LEGAL_OWNER_OPTIONS.map((o) =>
+                  renderOptionButton(o, stage1Data.isLegalOwner, () => handleOwnerSelect(o.id))
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Sub-step 3: Listed on market */}
+          {stage1Step === 3 && (
+            <div className="flex flex-col gap-4">
+              <div>
+                <h2 className="text-3xl font-bold text-gray-900 leading-tight">Is the property currently listed on the market?</h2>
+                <p className="mt-2 text-base text-gray-500">We can only buy properties that aren't listed for sale.</p>
+              </div>
+              <div className="flex flex-col gap-3">
+                {LISTED_OPTIONS.map((o) =>
+                  renderOptionButton(o, stage1Data.listedOnMarket, () => handleListedSelect(o.id))
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Sub-step 4: Contact info + TCPA + final CTA */}
+          {stage1Step === 4 && (
+            <div className="flex flex-col gap-5">
+              <div>
+                <h2 className="text-3xl font-bold text-gray-900 leading-tight">Where should we send your offer?</h2>
+                <p className="mt-2 text-base text-gray-500">We'll text you a no-obligation cash offer within 24 hours.</p>
+              </div>
+              <div className="flex flex-col gap-4">
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <Input
+                      placeholder="First name"
+                      autoComplete="given-name"
+                      value={stage1Data.firstName}
+                      onChange={(e) => {
+                        setStage1Data({ ...stage1Data, firstName: e.target.value })
+                        setValidationErrors({ ...validationErrors, firstName: "" })
+                      }}
+                      className={`h-14 rounded-2xl border-2 border-gray-200 bg-white text-base text-gray-900 placeholder:text-gray-400 focus:border-[var(--accent)] focus:ring-[var(--accent)]/20 px-4 ${validationErrors.firstName ? "border-red-500" : ""}`}
+                    />
+                    {validationErrors.firstName && <p className="mt-1.5 text-sm text-red-500">{validationErrors.firstName}</p>}
+                  </div>
+                  <div>
+                    <Input
+                      placeholder="Last name"
+                      autoComplete="family-name"
+                      value={stage1Data.lastName}
+                      onChange={(e) => {
+                        setStage1Data({ ...stage1Data, lastName: e.target.value })
+                        setValidationErrors({ ...validationErrors, lastName: "" })
+                      }}
+                      className={`h-14 rounded-2xl border-2 border-gray-200 bg-white text-base text-gray-900 placeholder:text-gray-400 focus:border-[var(--accent)] focus:ring-[var(--accent)]/20 px-4 ${validationErrors.lastName ? "border-red-500" : ""}`}
+                    />
+                    {validationErrors.lastName && <p className="mt-1.5 text-sm text-red-500">{validationErrors.lastName}</p>}
+                  </div>
+                </div>
+                <div>
+                  <Input
+                    type="email"
+                    placeholder="Email address"
+                    autoComplete="email"
+                    value={stage1Data.email}
+                    onChange={(e) => {
+                      setStage1Data({ ...stage1Data, email: e.target.value })
+                      setValidationErrors({ ...validationErrors, email: "" })
+                    }}
+                    className={`h-14 rounded-2xl border-2 border-gray-200 bg-white text-base text-gray-900 placeholder:text-gray-400 focus:border-[var(--accent)] focus:ring-[var(--accent)]/20 px-4 ${validationErrors.email ? "border-red-500" : ""}`}
+                  />
+                  {validationErrors.email && <p className="mt-1.5 text-sm text-red-500">{validationErrors.email}</p>}
+                </div>
+                <div>
+                  <Input
+                    type="tel"
+                    placeholder="(516) 555-0000"
+                    autoComplete="tel"
+                    value={stage1Data.phone}
+                    onChange={(e) => {
+                      setStage1Data({ ...stage1Data, phone: formatPhoneNumber(e.target.value) })
+                      setValidationErrors({ ...validationErrors, phone: "" })
+                    }}
+                    maxLength={14}
+                    className={`h-14 rounded-2xl border-2 border-gray-200 bg-white text-base text-gray-900 placeholder:text-gray-400 focus:border-[var(--accent)] focus:ring-[var(--accent)]/20 px-4 ${validationErrors.phone ? "border-red-500" : ""}`}
+                  />
+                  {validationErrors.phone && <p className="mt-1.5 text-sm text-red-500">{validationErrors.phone}</p>}
+                </div>
+
+                {/* TCPA consent */}
+                <label className={`flex items-start gap-3 rounded-2xl border-2 px-4 py-4 cursor-pointer transition-colors ${
+                  validationErrors.tcpaConsent ? "border-red-500" : "border-gray-200 hover:border-gray-300"
+                }`}>
+                  <input
+                    type="checkbox"
+                    checked={stage1Data.tcpaConsent}
+                    onChange={(e) => {
+                      setStage1Data({ ...stage1Data, tcpaConsent: e.target.checked })
+                      if (e.target.checked) setValidationErrors({ ...validationErrors, tcpaConsent: "" })
+                    }}
+                    className="mt-1 h-5 w-5 rounded border-2 border-gray-300 text-[var(--accent)] focus:ring-[var(--accent)]/30"
+                  />
+                  <span className="text-sm text-gray-600 leading-snug">
+                    By checking this box, I consent to receive calls and text messages (including autodialed) from {companyName} at the phone number provided. Consent is not a condition of any service. Standard message and data rates may apply. Reply STOP to opt out.
+                  </span>
+                </label>
+                {validationErrors.tcpaConsent && <p className="-mt-2 text-sm text-red-500">{validationErrors.tcpaConsent}</p>}
+
+                {/* Honeypot */}
+                <input
+                  type="text"
+                  name="website"
+                  value={honeypot}
+                  onChange={(e) => setHoneypot(e.target.value)}
+                  className="absolute -left-[9999px] opacity-0 pointer-events-none"
+                  tabIndex={-1}
+                  autoComplete="off"
+                />
+              </div>
+
+              {/* Big CTA — finish line frame */}
+              <Button
+                onClick={handleContactSubmit}
+                disabled={isSubmitting}
+                className="bg-[var(--accent)] text-white hover:opacity-95 disabled:opacity-50 h-16 rounded-2xl font-bold text-lg tracking-tight shadow-md"
+              >
+                {isSubmitting ? (
+                  <span className="flex items-center gap-2">
+                    <span className="h-5 w-5 animate-spin rounded-full border-2 border-white/30 border-t-white" />
+                    Submitting...
+                  </span>
+                ) : (
+                  <>
+                    Get My Cash Offer
+                    <ArrowRight className="ml-2 h-5 w-5" />
+                  </>
+                )}
+              </Button>
+            </div>
+          )}
+
+          {/* Back nav within Stage 1 — only show if not on first step */}
+          {stage1Step > 1 && (
+            <button
+              onClick={handleStage1Back}
+              className="text-sm text-gray-500 hover:text-gray-900 self-start flex items-center gap-1 -mt-2"
+            >
+              <ArrowLeft className="h-4 w-4" />
+              Back
+            </button>
+          )}
+        </div>
+      </div>
+    )
+  }
+
+  // ============================================================
+  // STAGE 2 — quality questions, progress bar SHOWN
+  // ============================================================
+  return (
+    <div className="w-full rounded-2xl border-2 border-gray-200 bg-white p-8 shadow-lg">
+      <div className="flex flex-col gap-6">
+        {/* Progress bar — only in Stage 2 */}
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <Home className="h-6 w-6 text-[var(--accent)]" />
+            <span className="text-base font-medium text-gray-700">A few quick questions</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-semibold text-gray-600">{stage2Step}/{totalStage2Steps}</span>
+            <div className="flex gap-1.5">
+              {Array.from({ length: totalStage2Steps }).map((_, i) => (
+                <div
+                  key={i}
+                  className={`h-2 w-7 rounded-full transition-colors ${
+                    i < stage2Step ? "bg-[var(--accent)]" : "bg-gray-200"
+                  }`}
+                />
+              ))}
+            </div>
           </div>
         </div>
 
-        {step === 1 && (
+        {currentStage2Key === "timeline" && (
           <div className="flex flex-col gap-4">
             <div>
-              <h2 className="text-2xl font-semibold text-gray-900">What's your property address?</h2>
-              <p className="mt-1 text-sm text-gray-500">Start typing and select your address from the dropdown.</p>
-            </div>
-            <AddressAutocomplete
-              value={surveyData.address}
-              onChange={(address) => { setSurveyData({ ...surveyData, address }); setAddressVerified(false); setAddressOutOfArea(false) }}
-              onSelect={handleAddressSelect}
-              onOutOfArea={(addr) => { setSurveyData({ ...surveyData, address: addr }); setAddressVerified(true); setAddressOutOfArea(true) }}
-              serviceAreas={serviceAreas}
-              placeholder="Start typing your address..."
-            />
-
-          </div>
-        )}
-
-        {step === 2 && (
-          <div className="flex flex-col gap-4">
-            <div>
-              <h2 className="text-2xl font-semibold text-gray-900">What type of property is it?</h2>
-              <p className="mt-1 text-sm text-gray-500">Select the option that best describes your property.</p>
-            </div>
-            <div className="flex flex-col gap-2">
-              {PROPERTY_TYPE_OPTIONS.map((option) => renderOptionButton(option, surveyData.propertyType, "propertyType"))}
-            </div>
-          </div>
-        )}
-
-        {step === 3 && (
-          <div className="flex flex-col gap-4">
-            <div>
-              <h2 className="text-2xl font-semibold text-gray-900">Are you the legal homeowner?</h2>
-              <p className="mt-1 text-sm text-gray-500">This helps us understand who we'll be working with.</p>
-            </div>
-            <div className="flex flex-col gap-2">
-              {LEGAL_OWNER_OPTIONS.map((option) => renderOptionButton(option, surveyData.isLegalOwner, "isLegalOwner"))}
-            </div>
-          </div>
-        )}
-
-        {step === 4 && (
-          <div className="flex flex-col gap-4">
-            <div>
-              <h2 className="text-2xl font-semibold text-gray-900">Is the property currently listed on the market?</h2>
-              <p className="mt-1 text-sm text-gray-500">Let us know if the property is currently for sale.</p>
-            </div>
-            <div className="flex flex-col gap-2">
-              {LISTED_OPTIONS.map((option) => renderOptionButton(option, surveyData.listedOnMarket, "listedOnMarket"))}
-            </div>
-          </div>
-        )}
-
-        {step === 5 && (
-          <div className="flex flex-col gap-4">
-            <div>
-              <h2 className="text-2xl font-semibold text-gray-900">How fast are you looking to sell?</h2>
-              <p className="mt-1 text-sm text-gray-500">Select your ideal timeline for closing.</p>
-            </div>
-            <div className="flex flex-col gap-2">
-              {TIMELINE_OPTIONS.map((option) => renderOptionButton(option, surveyData.timeline, "timeline"))}
-            </div>
-          </div>
-        )}
-
-        {step === 6 && (
-          <div className="flex flex-col gap-4">
-            <div>
-              <h2 className="text-2xl font-semibold text-gray-900">What condition is the property in?</h2>
-              <p className="mt-1 text-sm text-gray-500">Be honest - we buy houses in any condition.</p>
-            </div>
-            <div className="flex flex-col gap-2">
-              {CONDITION_OPTIONS.map((option) => renderOptionButton(option, surveyData.condition, "condition"))}
-            </div>
-          </div>
-        )}
-
-        {step === 7 && (
-          <div className="flex flex-col gap-4">
-            <div>
-              <h2 className="text-2xl font-semibold text-gray-900">What's your reason for selling?</h2>
-              <p className="mt-1 text-sm text-gray-500">This helps us understand your situation better.</p>
-            </div>
-            <div className="grid grid-cols-2 gap-2">
-              {REASON_OPTIONS.map((option) => renderOptionButton(option, surveyData.reason, "reason"))}
-            </div>
-          </div>
-        )}
-
-        {step === 8 && (
-          <div className="flex flex-col gap-4">
-            <div>
-              <h2 className="text-2xl font-semibold text-gray-900">How can we reach you?</h2>
-              <p className="mt-1 text-sm text-gray-500">We'll use this to send you your cash offer.</p>
+              <h2 className="text-3xl font-bold text-gray-900 leading-tight">How fast are you looking to sell?</h2>
+              <p className="mt-2 text-base text-gray-500">Select your ideal timeline.</p>
             </div>
             <div className="flex flex-col gap-3">
-              <div>
-                <Input
-                  placeholder="Your full name"
-                  value={surveyData.name}
-                  onChange={(e) => {
-                    setSurveyData({ ...surveyData, name: e.target.value })
-                    setValidationErrors({ ...validationErrors, name: "" })
-                  }}
-                  className={`h-12 rounded-xl border-gray-200 bg-white text-gray-900 placeholder:text-gray-400 focus:border-[var(--accent)] focus:ring-[var(--accent)]/20 ${validationErrors.name ? "border-red-500" : ""}`}
-                />
-                {validationErrors.name && <p className="mt-1 text-xs text-red-500">{validationErrors.name}</p>}
-              </div>
-              <div>
-                <Input
-                  type="email"
-                  placeholder="Email address"
-                  value={surveyData.email}
-                  onChange={(e) => {
-                    setSurveyData({ ...surveyData, email: e.target.value })
-                    setValidationErrors({ ...validationErrors, email: "" })
-                  }}
-                  className={`h-12 rounded-xl border-gray-200 bg-white text-gray-900 placeholder:text-gray-400 focus:border-[var(--accent)] focus:ring-[var(--accent)]/20 ${validationErrors.email ? "border-red-500" : ""}`}
-                />
-                {validationErrors.email && <p className="mt-1 text-xs text-red-500">{validationErrors.email}</p>}
-              </div>
-              <div>
-                <Input
-                  type="tel"
-                  placeholder="(301) 555-0000"
-                  value={surveyData.phone}
-                  onChange={(e) => {
-                    setSurveyData({ ...surveyData, phone: formatPhoneNumber(e.target.value) })
-                    setValidationErrors({ ...validationErrors, phone: "" })
-                  }}
-                  maxLength={14}
-                  className={`h-12 rounded-xl border-gray-200 bg-white text-gray-900 placeholder:text-gray-400 focus:border-[var(--accent)] focus:ring-[var(--accent)]/20 ${validationErrors.phone ? "border-red-500" : ""}`}
-                />
-                {validationErrors.phone && <p className="mt-1 text-xs text-red-500">{validationErrors.phone}</p>}
-              </div>
-              {/* Honeypot field */}
-              <input
-                type="text"
-                name="website"
-                value={honeypot}
-                onChange={(e) => setHoneypot(e.target.value)}
-                className="absolute -left-[9999px] opacity-0 pointer-events-none"
-                tabIndex={-1}
-                autoComplete="off"
-              />
+              {TIMELINE_OPTIONS.map((option) =>
+                renderOptionButton(option, stage2Data.timeline, () => handleStage2OptionSelect("timeline", option.id))
+              )}
             </div>
           </div>
         )}
 
-        {/* Navigation */}
+        {currentStage2Key === "askingPrice" && (
+          <div className="flex flex-col gap-4">
+            <div>
+              <h2 className="text-3xl font-bold text-gray-900 leading-tight">If we covered all closing costs and bought it as-is, what's the lowest price you'd accept?</h2>
+              <p className="mt-2 text-base text-gray-500">No fees, no commissions, nothing out of your pocket.</p>
+            </div>
+            <div className="flex flex-col gap-3">
+              {ASKING_PRICE_OPTIONS.map((option) =>
+                renderOptionButton(option, stage2Data.askingPrice, () => handleStage2OptionSelect("askingPrice", option.id))
+              )}
+            </div>
+          </div>
+        )}
+
+        {currentStage2Key === "ownershipLength" && (
+          <div className="flex flex-col gap-4">
+            <div>
+              <h2 className="text-3xl font-bold text-gray-900 leading-tight">How long have you owned the home?</h2>
+              <p className="mt-2 text-base text-gray-500">This helps us estimate your equity position.</p>
+            </div>
+            <div className="flex flex-col gap-3">
+              {OWNERSHIP_LENGTH_OPTIONS.map((option) =>
+                renderOptionButton(option, stage2Data.ownershipLength, () => handleStage2OptionSelect("ownershipLength", option.id))
+              )}
+            </div>
+          </div>
+        )}
+
+        {currentStage2Key === "propertyType" && (
+          <div className="flex flex-col gap-4">
+            <div>
+              <h2 className="text-3xl font-bold text-gray-900 leading-tight">What type of property is it?</h2>
+              <p className="mt-2 text-base text-gray-500">Select the option that best describes your property.</p>
+            </div>
+            <div className="flex flex-col gap-3">
+              {PROPERTY_TYPE_OPTIONS.map((option) =>
+                renderOptionButton(option, stage2Data.propertyType, () => handleStage2OptionSelect("propertyType", option.id))
+              )}
+            </div>
+          </div>
+        )}
+
+        {currentStage2Key === "condition" && (
+          <div className="flex flex-col gap-4">
+            <div>
+              <h2 className="text-3xl font-bold text-gray-900 leading-tight">What condition is the property in?</h2>
+              <p className="mt-2 text-base text-gray-500">Be honest — we buy houses in any condition.</p>
+            </div>
+            <div className="flex flex-col gap-3">
+              {CONDITION_OPTIONS.map((option) =>
+                renderOptionButton(option, stage2Data.condition, () => handleStage2OptionSelect("condition", option.id))
+              )}
+            </div>
+          </div>
+        )}
+
+        {currentStage2Key === "reason" && (
+          <div className="flex flex-col gap-4">
+            <div>
+              <h2 className="text-3xl font-bold text-gray-900 leading-tight">What's your reason for selling?</h2>
+              <p className="mt-2 text-base text-gray-500">This helps us tailor our offer to your situation.</p>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              {REASON_OPTIONS.map((option) =>
+                renderOptionButton(option, stage2Data.reason, () => handleStage2OptionSelect("reason", option.id))
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Stage 2 navigation */}
         <div className="flex items-center justify-between">
-          <Button
-            variant="ghost"
-            onClick={handleBack}
-            disabled={step === 1}
-            className="text-gray-500 hover:text-gray-900 hover:bg-gray-100 disabled:opacity-0"
+          <button
+            onClick={handleStage2Back}
+            disabled={stage2Step === 1}
+            className="text-sm text-gray-500 hover:text-gray-900 disabled:opacity-0 flex items-center gap-1"
           >
-            <ArrowLeft className="mr-2 h-4 w-4" />
+            <ArrowLeft className="h-4 w-4" />
             Back
-          </Button>
-          <Button
-            onClick={handleNext}
-            disabled={!canProceed() || isSubmitting}
-            className="bg-[var(--accent)] text-white hover:bg-[var(--accent)] disabled:opacity-50"
-          >
-            {isSubmitting ? (
-              <span className="flex items-center gap-2">
-                <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/20 border-t-white" />
-                Submitting...
-              </span>
-            ) : (
-              <>
-                {step === totalSteps ? "Get My Cash Offer" : "Continue"}
-                {step !== totalSteps && <ArrowRight className="ml-2 h-4 w-4" />}
-              </>
-            )}
-          </Button>
+          </button>
+          {isSubmitting && (
+            <span className="flex items-center gap-2 text-sm text-gray-600">
+              <span className="h-4 w-4 animate-spin rounded-full border-2 border-gray-300 border-t-[var(--accent)]" />
+              Submitting...
+            </span>
+          )}
         </div>
       </div>
     </div>

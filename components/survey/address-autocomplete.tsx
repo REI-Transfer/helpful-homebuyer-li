@@ -20,6 +20,14 @@ export interface ServiceArea {
   radiusMiles: number
 }
 
+// Hard geographic lock for Helpful Homebuyer LI — Google Places will only
+// suggest addresses inside this rectangle (Long Island: Nassau + Suffolk).
+// County-level validation runs separately in survey-card.tsx after selection.
+const longIslandBounds = {
+  sw: { lat: 40.55, lng: -73.78 },
+  ne: { lat: 41.13, lng: -71.86 },
+}
+
 interface AddressAutocompleteProps {
   value: string
   onChange: (address: string) => void
@@ -27,6 +35,7 @@ interface AddressAutocompleteProps {
   onOutOfArea?: (address: string) => void
   serviceAreas?: ServiceArea[]
   placeholder?: string
+  className?: string
 }
 
 declare global {
@@ -56,6 +65,7 @@ export function AddressAutocomplete({
   onOutOfArea,
   serviceAreas = [],
   placeholder = "Start typing your address...",
+  className = "",
 }: AddressAutocompleteProps) {
   const inputRef = useRef<HTMLInputElement>(null)
   const autocompleteRef = useRef<google.maps.places.Autocomplete | null>(null)
@@ -88,25 +98,16 @@ export function AddressAutocomplete({
   const initAutocomplete = () => {
     if (!inputRef.current || !window.google?.maps?.places) return
 
-    // Build bounds covering all service area circles
-    let bounds: google.maps.LatLngBounds | undefined
-    const hasServiceAreas = serviceAreas.length > 0
-    if (hasServiceAreas) {
-      bounds = new google.maps.LatLngBounds()
-      serviceAreas.forEach(area => {
-        // Approximate circle bounding box (1 degree lat ≈ 69 miles)
-        const latOffset = area.radiusMiles / 69
-        const lngOffset = area.radiusMiles / (69 * Math.cos(area.centerLat * Math.PI / 180))
-        bounds!.extend({ lat: area.centerLat - latOffset, lng: area.centerLng - lngOffset })
-        bounds!.extend({ lat: area.centerLat + latOffset, lng: area.centerLng + lngOffset })
-      })
-    }
+    // Hard rectangle: only Long Island suggestions. strictBounds prevents
+    // Google from showing mainland NY or out-of-area matches.
+    const bounds = new google.maps.LatLngBounds(longIslandBounds.sw, longIslandBounds.ne)
 
     autocompleteRef.current = new google.maps.places.Autocomplete(inputRef.current, {
       componentRestrictions: { country: "us" },
       types: ["address"],
       fields: ["formatted_address", "address_components", "geometry"],
-      ...(bounds ? { bounds } : {}),
+      bounds,
+      strictBounds: true,
     })
 
     autocompleteRef.current.addListener("place_changed", () => {
@@ -132,7 +133,9 @@ export function AddressAutocomplete({
 
       const details: AddressDetails = { formattedAddress: place.formatted_address, lat, lng, state, city, county }
 
-      // Service area validation
+      // Optional soft service-area circles (in addition to the Long Island
+      // rectangle above). If configured, a selection outside any circle is
+      // routed to the out-of-area handler.
       if (serviceAreas.length > 0 && lat !== undefined && lng !== undefined) {
         if (!isInServiceArea(lat, lng, serviceAreas)) {
           onChange(place.formatted_address)
@@ -140,14 +143,13 @@ export function AddressAutocomplete({
           return
         }
       }
-
       onChange(place.formatted_address)
       onSelect(place.formatted_address, details)
     })
   }
 
   return (
-    <div className="relative">
+    <div className={`relative ${className}`}>
       <div className="absolute left-3 top-1/2 -translate-y-1/2 z-10">
         <MapPin className="h-5 w-5 text-gray-400" />
       </div>

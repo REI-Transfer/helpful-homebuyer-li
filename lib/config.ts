@@ -41,7 +41,9 @@ const config = {
   termsUrl:         process.env.TERMS_URL           ?? "/terms",
 
   // Webhook (server-side only — never exposed to browser)
-  webhookUrl:      process.env.WEBHOOK_URL ?? "",
+  webhookUrl:         process.env.WEBHOOK_URL          ?? "",
+  webhookUrlEarly:    process.env.WEBHOOK_URL_EARLY    ?? "",
+  webhookUrlComplete: process.env.WEBHOOK_URL_COMPLETE ?? "",
 } as const
 
 export default config
