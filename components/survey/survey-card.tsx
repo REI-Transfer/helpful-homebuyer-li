@@ -437,6 +437,10 @@ export function SurveyCard({
   const handleStage2OptionSelect = (field: keyof Stage2State, value: string) => {
     const next = { ...stage2Data, [field]: value }
     setStage2Data(next)
+    if (field === "condition" && value === "excellent") {
+      setTimeout(() => { setDisqualifyReason("excellentCondition"); setIsDisqualified(true) }, 300)
+      return
+    }
     setTimeout(() => {
       if (stage2Step < totalStage2Steps) setStage2Step(stage2Step + 1)
       else {
@@ -547,6 +551,11 @@ export function SurveyCard({
         title: "Outside Our Service Area",
         message: "We currently purchase properties in Nassau and Suffolk counties on Long Island, NY.",
         detail: "If you believe your property is in Nassau or Suffolk County, please try a different address — sometimes Google Places matches a similar address from another area.",
+      },
+      excellentCondition: {
+        title: "We're Unable to Assist",
+        message: "Unfortunately, we're not able to make offers on properties in excellent condition at this time.",
+        detail: "We typically work with homeowners whose properties need repairs or updates. If your situation changes, feel free to reach out.",
       },
     }
     const msg = disqualifyMessages[disqualifyReason] || disqualifyMessages.notOwner
