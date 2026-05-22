@@ -53,7 +53,6 @@ export function AdvertorialPage({
   const formRef = useRef<HTMLDivElement>(null)
   const [showSticky, setShowSticky] = useState(false)
   const [stickyAddr, setStickyAddr] = useState("")
-  const [modalOpen, setModalOpen] = useState(false)
   const [seededAddr, setSeededAddr] = useState("")
 
   // ---- Two rolling countdown timers (randomized per page load) ----
@@ -102,9 +101,9 @@ export function AdvertorialPage({
   // Sticky bar is a plain text starter (no Google autocomplete — its dropdown breaks
   // inside a fixed/transformed bar). It just opens the modal and prefills the address
   // into the form, where the survey's autocomplete + geo-validation actually run.
-  const openModal = () => {
+  const goToForm = () => {
     setSeededAddr(stickyAddr.trim())
-    setModalOpen(true)
+    scrollToForm()
   }
 
   return (
@@ -226,7 +225,7 @@ export function AdvertorialPage({
             <h3 className="text-[23px] md:text-[26px] font-extrabold">See What Your Home Qualifies For</h3>
             <p style={{ color: C.muted }} className="mt-1 text-[15px]">A few quick questions. No cost, no obligation, no pressure.</p>
           </div>
-          <SurveyCard phoneDisplay={phoneDisplay} phoneHref={phoneHref} serviceAreas={serviceAreas} companyName={companyName} />
+          <SurveyCard key={seededAddr || "fresh"} phoneDisplay={phoneDisplay} phoneHref={phoneHref} serviceAreas={serviceAreas} companyName={companyName} initialStage1Data={seededAddr ? { address: seededAddr } : undefined} />
         </div>
 
         <H2>What Other Homeowners Are Saying</H2>
@@ -287,7 +286,7 @@ export function AdvertorialPage({
 
       {/* ============ STICKY ADDRESS BAR ============ */}
       <div
-        style={{ borderBottom: `1px solid ${C.rule}`, boxShadow: "0 6px 20px rgba(0,0,0,.10)", transform: showSticky && !modalOpen ? "none" : "translateY(-120%)", transition: "transform .3s ease" }}
+        style={{ borderBottom: `1px solid ${C.rule}`, boxShadow: "0 6px 20px rgba(0,0,0,.10)", transform: showSticky ? "none" : "translateY(-120%)", transition: "transform .3s ease" }}
         className="fixed left-0 right-0 top-0 z-40 bg-white px-4 py-3"
       >
         <div className="max-w-[760px] mx-auto flex gap-2.5 items-center">
@@ -297,32 +296,16 @@ export function AdvertorialPage({
               type="text"
               value={stickyAddr}
               onChange={(e) => setStickyAddr(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter") openModal() }}
+              onKeyDown={(e) => { if (e.key === "Enter") goToForm() }}
               placeholder="Your property address"
               className="w-full h-12 rounded-[9px] border border-gray-300 px-3 text-[15px] outline-none focus:border-gray-400"
             />
           </div>
-          <button onClick={openModal} style={{ background: C.cta }} className="px-4 sm:px-[18px] py-3 text-white rounded-[9px] text-[14px] sm:text-[15px] font-extrabold whitespace-nowrap hover:opacity-95 transition-opacity">
+          <button onClick={goToForm} style={{ background: C.cta }} className="px-4 sm:px-[18px] py-3 text-white rounded-[9px] text-[14px] sm:text-[15px] font-extrabold whitespace-nowrap hover:opacity-95 transition-opacity">
             See My Cash Offer →
           </button>
         </div>
       </div>
-
-      {/* ============ MODAL — rest of the form ============ */}
-      {modalOpen && (
-        <div className="fixed inset-0 z-50 flex items-start sm:items-center justify-center overflow-y-auto p-4" style={{ background: "rgba(0,0,0,0.55)" }} onClick={() => setModalOpen(false)}>
-          <div className="relative w-full max-w-[600px] my-4" onClick={(e) => e.stopPropagation()}>
-            <button onClick={() => setModalOpen(false)} aria-label="Close" className="absolute -top-3 -right-3 z-10 h-9 w-9 rounded-full bg-white text-gray-700 text-xl font-bold shadow-md flex items-center justify-center hover:bg-gray-100">×</button>
-            <SurveyCard
-              phoneDisplay={phoneDisplay}
-              phoneHref={phoneHref}
-              serviceAreas={serviceAreas}
-              companyName={companyName}
-              initialStage1Data={seededAddr ? { address: seededAddr } : undefined}
-            />
-          </div>
-        </div>
-      )}
     </div>
   )
 }
