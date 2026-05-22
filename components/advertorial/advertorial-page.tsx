@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react"
 import Image from "next/image"
 import { SurveyCard } from "@/components/survey/survey-card"
-import { type ServiceArea } from "@/components/survey/address-autocomplete"
+import { AddressAutocomplete, type AddressDetails, type ServiceArea } from "@/components/survey/address-autocomplete"
 
 // Main advertorial editorial landing page (cold-traffic pre-sell), ported from the
 // Inner City advertorial. Tells the 45+ story, embeds the client's existing SurveyCard,
@@ -53,7 +53,7 @@ export function AdvertorialPage({
   const formRef = useRef<HTMLDivElement>(null)
   const [showSticky, setShowSticky] = useState(false)
   const [stickyAddr, setStickyAddr] = useState("")
-  const [seededAddr, setSeededAddr] = useState("")
+  const [seeded, setSeeded] = useState<{ address: string; state: string; city: string; county: string } | null>(null)
 
   // ---- Two rolling countdown timers (randomized per page load) ----
   const [cdA, setCdA] = useState("--:--:--")
@@ -101,8 +101,15 @@ export function AdvertorialPage({
   // Sticky bar is a plain text starter (no Google autocomplete — its dropdown breaks
   // inside a fixed/transformed bar). It just opens the modal and prefills the address
   // into the form, where the survey's autocomplete + geo-validation actually run.
+  // Top bar autocompletes (its dropdown renders downward, visible). On a real selection we
+  // capture the validated address + state/county and jump the form to step 2. If they typed
+  // without selecting, we prefill the address and the form opens at step 1 to autocomplete.
+  const handleStickySelect = (address: string, details: AddressDetails) => {
+    setSeeded({ address, state: details.state || "", city: details.city || "", county: details.county || "" })
+    scrollToForm()
+  }
   const goToForm = () => {
-    setSeededAddr(stickyAddr.trim())
+    if (!seeded && stickyAddr.trim()) setSeeded({ address: stickyAddr.trim(), state: "", city: "", county: "" })
     scrollToForm()
   }
 
@@ -225,7 +232,15 @@ export function AdvertorialPage({
             <h3 className="text-[23px] md:text-[26px] font-extrabold">See What Your Home Qualifies For</h3>
             <p style={{ color: C.muted }} className="mt-1 text-[15px]">A few quick questions. No cost, no obligation, no pressure.</p>
           </div>
-          <SurveyCard key={seededAddr || "fresh"} phoneDisplay={phoneDisplay} phoneHref={phoneHref} serviceAreas={serviceAreas} companyName={companyName} initialStage1Data={seededAddr ? { address: seededAddr } : undefined} />
+          <SurveyCard
+            key={seeded?.address || "fresh"}
+            phoneDisplay={phoneDisplay}
+            phoneHref={phoneHref}
+            serviceAreas={serviceAreas}
+            companyName={companyName}
+            initialStage1Data={seeded ? { address: seeded.address, state: seeded.state, city: seeded.city, county: seeded.county } : undefined}
+            initialStage1Step={seeded && seeded.state ? 2 : undefined}
+          />
         </div>
 
         <H2>What Other Homeowners Are Saying</H2>
@@ -292,14 +307,7 @@ export function AdvertorialPage({
         <div className="max-w-[760px] mx-auto flex gap-2.5 items-center">
           <label className="hidden sm:block text-[13px] font-bold whitespace-nowrap">Enter your address to start:</label>
           <div className="flex-1 min-w-0">
-            <input
-              type="text"
-              value={stickyAddr}
-              onChange={(e) => setStickyAddr(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter") goToForm() }}
-              placeholder="Your property address"
-              className="w-full h-12 rounded-[9px] border border-gray-300 px-3 text-[15px] outline-none focus:border-gray-400"
-            />
+            <AddressAutocomplete value={stickyAddr} onChange={setStickyAddr} onSelect={handleStickySelect} placeholder="Your property address" />
           </div>
           <button onClick={goToForm} style={{ background: C.cta }} className="px-4 sm:px-[18px] py-3 text-white rounded-[9px] text-[14px] sm:text-[15px] font-extrabold whitespace-nowrap hover:opacity-95 transition-opacity">
             See My Cash Offer →
