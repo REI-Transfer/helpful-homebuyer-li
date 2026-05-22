@@ -6,6 +6,8 @@
 const config = {
   // Brand
   companyName:     process.env.COMPANY_NAME     ?? "Your Home Buyers",
+  smsKeyword:      process.env.SMS_KEYWORD      ?? "OFFER",
+  marketName:      process.env.MARKET_NAME      ?? "",
   phoneDisplay:    process.env.PHONE_DISPLAY     ?? "(800) 000-0000",
   phoneHref:       process.env.PHONE_HREF        ?? "8000000000",
   accentColor:     process.env.ACCENT_COLOR      ?? "#2563eb",

@@ -208,6 +208,11 @@ interface SurveyCardProps {
   phoneHref?: string
   serviceAreas?: ServiceArea[]
   companyName?: string
+  // Optional seeding so the advertorial sticky address bar can open the form at the
+  // next question with the captured address already filled. Additive only; does not
+  // change submission, webhook, or any connections.
+  initialStage1Data?: Partial<Stage1State>
+  initialStage1Step?: number
 }
 
 export function SurveyCard({
@@ -215,16 +220,18 @@ export function SurveyCard({
   phoneHref = "8000000000",
   serviceAreas = [],
   companyName = "Helpful Homebuyer LI",
+  initialStage1Data,
+  initialStage1Step,
 }: SurveyCardProps) {
   // ---- Stage state ----
   const [stage, setStage] = useState<1 | 2>(1)
-  const [stage1Step, setStage1Step] = useState(1) // 1=address, 2=owner, 3=listed, 4=contact
+  const [stage1Step, setStage1Step] = useState(initialStage1Step ?? 1) // 1=address, 2=owner, 3=listed, 4=contact
   const [stage2Step, setStage2Step] = useState(1) // 1..N within stage 2 (N depends on env gates)
   const totalStage2Steps = STAGE2_STEPS.length
   const currentStage2Key: Stage2StepKey | undefined = STAGE2_STEPS[stage2Step - 1]
 
   // ---- Data state ----
-  const [stage1Data, setStage1Data] = useState<Stage1State>(INITIAL_STAGE1)
+  const [stage1Data, setStage1Data] = useState<Stage1State>({ ...INITIAL_STAGE1, ...initialStage1Data })
   const [stage2Data, setStage2Data] = useState<Stage2State>(INITIAL_STAGE2)
 
   // ---- Submission state ----
