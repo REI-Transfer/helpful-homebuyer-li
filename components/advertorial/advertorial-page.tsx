@@ -54,6 +54,7 @@ export function AdvertorialPage({
   const [showSticky, setShowSticky] = useState(false)
   const [stickyAddr, setStickyAddr] = useState("")
   const [seeded, setSeeded] = useState<{ address: string; state: string; city: string; county: string } | null>(null)
+  const [modalOpen, setModalOpen] = useState(false)
 
   // ---- Two rolling countdown timers (randomized per page load) ----
   const [cdA, setCdA] = useState("--:--:--")
@@ -100,17 +101,17 @@ export function AdvertorialPage({
   const scrollToForm = () => formRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })
   // Sticky bar is a plain text starter (no Google autocomplete — its dropdown breaks
   // inside a fixed/transformed bar). It just opens the modal and prefills the address
-  // into the form, where the survey's autocomplete + geo-validation actually run.
-  // Top bar autocompletes (its dropdown renders downward, visible). On a real selection we
-  // capture the validated address + state/county and jump the form to step 2. If they typed
-  // without selecting, we prefill the address and the form opens at step 1 to autocomplete.
+  // Top bar autocompletes (dropdown renders downward, visible). When they pick a suggestion
+  // we capture the validated address + state/county and open a POPUP with the rest of the
+  // form starting at step 2 (no address field in the popup, so no dropdown issue). If they
+  // typed without selecting, the popup opens at the address step to autocomplete there.
   const handleStickySelect = (address: string, details: AddressDetails) => {
     setSeeded({ address, state: details.state || "", city: details.city || "", county: details.county || "" })
-    scrollToForm()
+    setModalOpen(true)
   }
   const goToForm = () => {
     if (!seeded && stickyAddr.trim()) setSeeded({ address: stickyAddr.trim(), state: "", city: "", county: "" })
-    scrollToForm()
+    setModalOpen(true)
   }
 
   return (
@@ -232,15 +233,7 @@ export function AdvertorialPage({
             <h3 className="text-[23px] md:text-[26px] font-extrabold">See What Your Home Qualifies For</h3>
             <p style={{ color: C.muted }} className="mt-1 text-[15px]">A few quick questions. No cost, no obligation, no pressure.</p>
           </div>
-          <SurveyCard
-            key={seeded?.address || "fresh"}
-            phoneDisplay={phoneDisplay}
-            phoneHref={phoneHref}
-            serviceAreas={serviceAreas}
-            companyName={companyName}
-            initialStage1Data={seeded ? { address: seeded.address, state: seeded.state, city: seeded.city, county: seeded.county } : undefined}
-            initialStage1Step={seeded && seeded.state ? 2 : undefined}
-          />
+          <SurveyCard phoneDisplay={phoneDisplay} phoneHref={phoneHref} serviceAreas={serviceAreas} companyName={companyName} />
         </div>
 
         <H2>What Other Homeowners Are Saying</H2>
@@ -301,7 +294,7 @@ export function AdvertorialPage({
 
       {/* ============ STICKY ADDRESS BAR ============ */}
       <div
-        style={{ borderBottom: `1px solid ${C.rule}`, boxShadow: "0 6px 20px rgba(0,0,0,.10)", transform: showSticky ? "none" : "translateY(-120%)", transition: "transform .3s ease" }}
+        style={{ borderBottom: `1px solid ${C.rule}`, boxShadow: "0 6px 20px rgba(0,0,0,.10)", transform: showSticky && !modalOpen ? "none" : "translateY(-120%)", transition: "transform .3s ease" }}
         className="fixed left-0 right-0 top-0 z-40 bg-white px-4 py-3"
       >
         <div className="max-w-[760px] mx-auto flex gap-2.5 items-center">
@@ -314,6 +307,24 @@ export function AdvertorialPage({
           </button>
         </div>
       </div>
+
+      {/* ============ POPUP — rest of the form after the top bar ============ */}
+      {modalOpen && (
+        <div className="fixed inset-0 z-50 flex items-start sm:items-center justify-center overflow-y-auto p-4" style={{ background: "rgba(0,0,0,0.55)" }} onClick={() => setModalOpen(false)}>
+          <div className="relative w-full max-w-[600px] my-4" onClick={(e) => e.stopPropagation()}>
+            <button onClick={() => setModalOpen(false)} aria-label="Close" className="absolute -top-3 -right-3 z-10 h-9 w-9 rounded-full bg-white text-gray-700 text-xl font-bold shadow-md flex items-center justify-center hover:bg-gray-100">×</button>
+            <SurveyCard
+              key={seeded?.address || "modal"}
+              phoneDisplay={phoneDisplay}
+              phoneHref={phoneHref}
+              serviceAreas={serviceAreas}
+              companyName={companyName}
+              initialStage1Data={seeded ? { address: seeded.address, state: seeded.state, city: seeded.city, county: seeded.county } : undefined}
+              initialStage1Step={seeded && seeded.state ? 2 : undefined}
+            />
+          </div>
+        </div>
+      )}
     </div>
   )
 }
