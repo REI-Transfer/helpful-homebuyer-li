@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react"
 import Image from "next/image"
 import { SurveyCard } from "@/components/survey/survey-card"
-import { AddressAutocomplete, type AddressDetails, type ServiceArea } from "@/components/survey/address-autocomplete"
+import { type ServiceArea } from "@/components/survey/address-autocomplete"
 
 // Main advertorial editorial landing page (cold-traffic pre-sell), ported from the
 // Inner City advertorial. Tells the 45+ story, embeds the client's existing SurveyCard,
@@ -54,7 +54,7 @@ export function AdvertorialPage({
   const [showSticky, setShowSticky] = useState(false)
   const [stickyAddr, setStickyAddr] = useState("")
   const [modalOpen, setModalOpen] = useState(false)
-  const [seeded, setSeeded] = useState<(AddressDetails & { address: string }) | null>(null)
+  const [seededAddr, setSeededAddr] = useState("")
 
   // ---- Two rolling countdown timers (randomized per page load) ----
   const [cdA, setCdA] = useState("--:--:--")
@@ -99,13 +99,11 @@ export function AdvertorialPage({
   }, [])
 
   const scrollToForm = () => formRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })
-  const handleStickySelect = (address: string, details: AddressDetails) => {
-    setSeeded({ ...details, address })
-    setModalOpen(true)
-  }
-  const openModalFromButton = () => {
-    const typed = stickyAddr.trim()
-    if (!seeded && typed) setSeeded({ address: typed, state: "", city: "", county: "" })
+  // Sticky bar is a plain text starter (no Google autocomplete — its dropdown breaks
+  // inside a fixed/transformed bar). It just opens the modal and prefills the address
+  // into the form, where the survey's autocomplete + geo-validation actually run.
+  const openModal = () => {
+    setSeededAddr(stickyAddr.trim())
     setModalOpen(true)
   }
 
@@ -295,9 +293,16 @@ export function AdvertorialPage({
         <div className="max-w-[760px] mx-auto flex gap-2.5 items-center">
           <label className="hidden sm:block text-[13px] font-bold whitespace-nowrap">Enter your address to start:</label>
           <div className="flex-1 min-w-0">
-            <AddressAutocomplete value={stickyAddr} onChange={setStickyAddr} onSelect={handleStickySelect} placeholder="Your property address" />
+            <input
+              type="text"
+              value={stickyAddr}
+              onChange={(e) => setStickyAddr(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") openModal() }}
+              placeholder="Your property address"
+              className="w-full h-12 rounded-[9px] border border-gray-300 px-3 text-[15px] outline-none focus:border-gray-400"
+            />
           </div>
-          <button onClick={openModalFromButton} style={{ background: C.cta }} className="px-4 sm:px-[18px] py-3 text-white rounded-[9px] text-[14px] sm:text-[15px] font-extrabold whitespace-nowrap hover:opacity-95 transition-opacity">
+          <button onClick={openModal} style={{ background: C.cta }} className="px-4 sm:px-[18px] py-3 text-white rounded-[9px] text-[14px] sm:text-[15px] font-extrabold whitespace-nowrap hover:opacity-95 transition-opacity">
             See My Cash Offer →
           </button>
         </div>
@@ -313,8 +318,7 @@ export function AdvertorialPage({
               phoneHref={phoneHref}
               serviceAreas={serviceAreas}
               companyName={companyName}
-              initialStage1Data={seeded ? { address: seeded.address, state: seeded.state || "", city: seeded.city || "", county: seeded.county || "" } : undefined}
-              initialStage1Step={seeded ? 2 : undefined}
+              initialStage1Data={seededAddr ? { address: seededAddr } : undefined}
             />
           </div>
         </div>
