@@ -287,8 +287,8 @@ export function AdvertorialPage({
 
       {/* ============ STICKY ADDRESS BAR ============ */}
       <div
-        style={{ borderTop: `1px solid ${C.rule}`, boxShadow: "0 -6px 20px rgba(0,0,0,.10)", transform: showSticky && !modalOpen ? "none" : "translateY(120%)", transition: "transform .3s ease" }}
-        className="fixed left-0 right-0 bottom-0 z-40 bg-white px-4 py-3"
+        style={{ borderBottom: `1px solid ${C.rule}`, boxShadow: "0 6px 20px rgba(0,0,0,.10)", transform: showSticky && !modalOpen ? "none" : "translateY(-120%)", transition: "transform .3s ease" }}
+        className="fixed left-0 right-0 top-0 z-40 bg-white px-4 py-3"
       >
         <div className="max-w-[760px] mx-auto flex gap-2.5 items-center">
           <label className="hidden sm:block text-[13px] font-bold whitespace-nowrap">Enter your address to start:</label>
