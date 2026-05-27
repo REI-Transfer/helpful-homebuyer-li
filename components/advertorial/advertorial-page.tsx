@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react"
 import Image from "next/image"
 import { SurveyCard } from "@/components/survey/survey-card"
 import { AddressAutocomplete, type AddressDetails, type ServiceArea } from "@/components/survey/address-autocomplete"
+import { XCircle } from "lucide-react"
 
 // Advertorial editorial landing page (v2 "equity-opportunity" angle). This is the
 // canonical "builder" source the advertorial package is copied from, so keep it
@@ -58,6 +59,8 @@ export function AdvertorialPage({
   const [stickyAddr, setStickyAddr] = useState("")
   const [seeded, setSeeded] = useState<{ address: string; state: string; city: string; county: string } | null>(null)
   const [modalOpen, setModalOpen] = useState(false)
+  // Out-of-area rejection for the sticky bar (matches the SurveyCard radius geofence).
+  const [outOfArea, setOutOfArea] = useState(false)
 
   // ---- Sticky bar reveal on scroll (hide while the form is on screen) ----
   useEffect(() => {
@@ -82,6 +85,12 @@ export function AdvertorialPage({
   const handleStickySelect = (address: string, details: AddressDetails) => {
     setSeeded({ address, state: details.state || "", city: details.city || "", county: details.county || "" })
     setModalOpen(true)
+  }
+  // Out-of-area sticky pick: show the rejection popup, do NOT seed or open the survey.
+  const handleStickyOutOfArea = (_address: string) => {
+    setSeeded(null)
+    setModalOpen(false)
+    setOutOfArea(true)
   }
   const openModalFromButton = () => {
     if (!seeded && stickyAddr.trim()) setSeeded({ address: stickyAddr.trim(), state: "", city: "", county: "" })
@@ -376,13 +385,13 @@ export function AdvertorialPage({
 
       {/* ============ STICKY ADDRESS BAR ============ */}
       <div
-        style={{ borderBottom: `1px solid ${C.rule}`, boxShadow: "0 6px 20px rgba(0,0,0,.10)", transform: showSticky && !modalOpen ? "none" : "translateY(-120%)", transition: "transform .3s ease" }}
+        style={{ borderBottom: `1px solid ${C.rule}`, boxShadow: "0 6px 20px rgba(0,0,0,.10)", transform: showSticky && !modalOpen && !outOfArea ? "none" : "translateY(-120%)", transition: "transform .3s ease" }}
         className="fixed left-0 right-0 top-0 z-40 bg-white px-4 py-3"
       >
         <div className="max-w-[760px] mx-auto flex gap-2.5 items-center">
           <label className="hidden sm:block text-[13px] font-bold whitespace-nowrap">Type your address to begin:</label>
           <div className="flex-1 min-w-0">
-            <AddressAutocomplete value={stickyAddr} onChange={setStickyAddr} onSelect={handleStickySelect} placeholder="Your property address" />
+            <AddressAutocomplete value={stickyAddr} onChange={setStickyAddr} onSelect={handleStickySelect} onOutOfArea={handleStickyOutOfArea} serviceAreas={serviceAreas} placeholder="Your property address" />
           </div>
           <button onClick={openModalFromButton} style={{ background: C.cta }} className="px-4 sm:px-[18px] py-3 text-white rounded-[9px] text-[14px] sm:text-[15px] font-extrabold whitespace-nowrap hover:opacity-95 transition-opacity">
             See My Cash Offer →
@@ -404,6 +413,37 @@ export function AdvertorialPage({
               initialStage1Data={seeded ? { address: seeded.address, state: seeded.state, city: seeded.city, county: seeded.county } : undefined}
               initialStage1Step={seeded && seeded.state ? 2 : undefined}
             />
+          </div>
+        </div>
+      )}
+
+      {/* ============ POPUP: out-of-area rejection (mirrors SurveyCard) ============ */}
+      {outOfArea && (
+        <div className="fixed inset-0 z-50 flex items-start sm:items-center justify-center overflow-y-auto p-4" style={{ background: "rgba(0,0,0,0.55)" }} onClick={() => setOutOfArea(false)}>
+          <div className="relative w-full max-w-[600px] my-4" onClick={(e) => e.stopPropagation()}>
+            <button onClick={() => setOutOfArea(false)} aria-label="Close" className="absolute -top-3 -right-3 z-10 h-9 w-9 rounded-full bg-white text-gray-700 text-xl font-bold shadow-md flex items-center justify-center hover:bg-gray-100">×</button>
+            <div className="w-full rounded-2xl border-2 border-gray-200 bg-white p-8 shadow-lg">
+              <div className="flex flex-col items-center gap-6 text-center">
+                <div className="flex h-16 w-16 items-center justify-center rounded-full bg-red-100">
+                  <XCircle className="h-8 w-8 text-red-500" />
+                </div>
+                <div>
+                  <h2 className="text-3xl font-bold text-gray-900">Outside Our Service Area</h2>
+                  <p className="mt-3 text-base text-gray-600">We currently purchase properties in Nassau and Suffolk counties on Long Island, NY.</p>
+                  <p className="mt-4 text-sm text-gray-500">If your property is in our service area, please re-enter the address and select it from the dropdown.</p>
+                </div>
+                <button
+                  onClick={() => { setOutOfArea(false); setStickyAddr("") }}
+                  style={{ background: C.cta }}
+                  className="mt-2 inline-flex items-center gap-2 rounded-2xl px-8 py-4 text-lg font-bold text-white hover:opacity-90 transition-opacity shadow-md"
+                >
+                  Enter A Different Address
+                </button>
+                <p className="text-[14px]">Prefer to talk it through?{" "}
+                  <a href={`tel:${phoneHref}`} style={{ color: C.accent }} className="font-bold underline underline-offset-2 whitespace-nowrap">{phoneDisplay}</a>
+                </p>
+              </div>
+            </div>
           </div>
         </div>
       )}
