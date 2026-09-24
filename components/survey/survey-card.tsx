@@ -192,7 +192,7 @@ function validateName(name: string): { valid: boolean; msg: string } {
 }
 
 // ---------- Meta Pixel firing helper ----------
-function fireMetaEvent(eventName: 'Lead' | 'LeadLowIntent' | 'LeadEarly', params: Record<string, unknown>, eventId: string) {
+function fireMetaEvent(eventName: 'Lead' | 'LeadLowIntent', params: Record<string, unknown>, eventId: string) {
   if (typeof window === "undefined" || !window.fbq) return
   const isStandard = eventName === 'Lead'
   if (isStandard) {
@@ -304,7 +304,7 @@ export function SurveyCard({
     setTimeout(() => setStage1Step(4), 350)
   }
 
-  // Contact submit — fires LeadEarly + sends partial webhook + advances to Stage 2
+  // Contact submit — no pixel event; sends partial webhook + advances to Stage 2
   const handleContactSubmit = async () => {
     const errors: Record<string, string> = {}
     const fnCheck = validateName(stage1Data.firstName)
@@ -330,10 +330,6 @@ export function SurveyCard({
 
     const earlyEventId = makeEventId('lead-early')
     stage1EventIdRef.current = earlyEventId
-    fireMetaEvent('LeadEarly', {
-      content_name: `${companyName} Stage 1`,
-      content_category: 'partial-lead',
-    }, earlyEventId)
     stage1FiredRef.current = true
 
     try {

@@ -1,5 +1,5 @@
 // Jenkins Homebuyers — two-stage lead scoring.
-// Stage 1 (contact captured) fires `LeadEarly` (track-only).
+// Stage 1 (contact captured) fires no pixel event; it only POSTs lead_stage 'early' to n8n.
 // Stage 2 (deep qualification) fires `Lead` (Meta optimization event)
 //   with weighted value, OR `LeadLowIntent` if score is too low / soft-fail.
 
