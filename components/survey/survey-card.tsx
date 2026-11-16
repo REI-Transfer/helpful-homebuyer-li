@@ -87,14 +87,6 @@ const PROPERTY_TYPE_OPTIONS = [
   { id: "other", label: "Other" },
 ]
 
-const TIMELINE_OPTIONS = [
-  { id: "asap", label: "ASAP — within 7 days" },
-  { id: "30-days", label: "Within 30 days" },
-  { id: "60-days", label: "Within 60 days" },
-  { id: "90-days", label: "Within 90 days" },
-  { id: "flexible", label: "I'm flexible" },
-]
-
 const CONDITION_OPTIONS = [
   { id: "excellent", label: "Excellent — Move-in ready" },
   { id: "good", label: "Good — Minor cosmetic touch-ups" },
@@ -124,9 +116,8 @@ const OWNERSHIP_LENGTH_OPTIONS = [
 
 // Dynamic Stage 2 step order. Ownership-length slots in after asking-price
 // (still a "your situation" question, before property details) when enabled.
-type Stage2StepKey = "timeline" | "askingPrice" | "ownershipLength" | "propertyType" | "condition" | "reason"
+type Stage2StepKey = "askingPrice" | "ownershipLength" | "propertyType" | "condition" | "reason"
 const STAGE2_STEPS: Stage2StepKey[] = [
-  "timeline",
   "askingPrice",
   ...(SHOW_OWNERSHIP_LENGTH ? (["ownershipLength"] as const) : []),
   "propertyType",
@@ -834,20 +825,6 @@ export function SurveyCard({
             </div>
           </div>
         </div>
-
-        {currentStage2Key === "timeline" && (
-          <div className="flex flex-col gap-4">
-            <div>
-              <h2 className="text-3xl font-bold text-gray-900 leading-tight">How fast are you looking to sell?</h2>
-              <p className="mt-2 text-base text-gray-500">Select your ideal timeline.</p>
-            </div>
-            <div className="flex flex-col gap-3">
-              {TIMELINE_OPTIONS.map((option) =>
-                renderOptionButton(option, stage2Data.timeline, () => handleStage2OptionSelect("timeline", option.id))
-              )}
-            </div>
-          </div>
-        )}
 
         {currentStage2Key === "askingPrice" && (
           <div className="flex flex-col gap-4">
